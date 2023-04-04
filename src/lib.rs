@@ -48,6 +48,17 @@ pub async fn run() {
                         WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
                             state.resize(**new_inner_size);
                         }
+                        WindowEvent::CursorMoved {
+                            device_id,
+                            position,
+                            ..
+                        } => {
+                            // state.cursor_moved(*position);
+                            println!("Cursor moved: {:?} to pos {:?}", device_id, position);
+                            // position.to_logical(1.0);
+                            state.clear_color.r = position.x / 1000.0;
+                            state.clear_color.g = position.y / 1000.0;
+                        }
                         _ => {}
                     }
                 }
@@ -101,6 +112,8 @@ struct State {
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
     window: Window,
+
+    clear_color: wgpu::Color,
 }
 
 impl State {
@@ -177,6 +190,8 @@ impl State {
             queue,
             config,
             size,
+
+            clear_color: wgpu::Color::BLACK,
         }
     }
 
@@ -219,12 +234,7 @@ impl State {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.2,
-                            b: 0.3,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(self.clear_color),
                         store: true,
                     },
                 })],
