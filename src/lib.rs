@@ -1,3 +1,5 @@
+use cgmath::prelude::*;
+use cgmath::{Matrix4, Quaternion, Vector3};
 use wgpu::util::DeviceExt;
 use winit::{
     event::*,
@@ -8,12 +10,69 @@ use winit::{
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
+const NUM_INSTANCES_PER_ROW: u32 = 10;
+const INSTANCE_DISPLACEMENT: Vector3<f32> = Vector3::new(
+    NUM_INSTANCES_PER_ROW as f32 * 0.5,
+    0.0,
+    NUM_INSTANCES_PER_ROW as f32 * 0.5,
+);
+
 mod camera;
 mod texture;
-use camera::{Camera, CameraController};
 use camera::CameraUniform;
+use camera::{Camera, CameraController};
 
-// lib.rs
+struct Instance {
+    position: Vector3<f32>,
+    rotation: Quaternion<f32>,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct InstanceRaw {
+    model: [[f32; 4]; 4],
+}
+
+impl Instance {
+    fn to_raw(&self) -> InstanceRaw {
+        InstanceRaw {
+            model: (Matrix4::from_translation(self.position) * Matrix4::from(self.rotation)).into(),
+        }
+    }
+}
+
+impl InstanceRaw {
+    fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
+        use std::mem;
+        wgpu::VertexBufferLayout {
+            array_stride: mem::size_of::<InstanceRaw>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 4]>() as wgpu::BufferAddress,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 8]>() as wgpu::BufferAddress,
+                    shader_location: 7,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 12]>() as wgpu::BufferAddress,
+                    shader_location: 8,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
@@ -21,7 +80,7 @@ struct Vertex {
     color: [f32; 3],
     tex_coords: [f32; 2],
 }
-// lib.rs
+
 impl Vertex {
     fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
         wgpu::VertexBufferLayout {
@@ -107,6 +166,9 @@ struct State {
     camera_uniform: CameraUniform,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+
+    instances: Vec<Instance>,
+    instance_buffer: wgpu::Buffer,
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
@@ -361,14 +423,12 @@ impl State {
             label: Some("camera_bind_group"),
         });
 
-
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
                 bind_group_layouts: &[&texture_bind_group_layout, &camera_bind_group_layout],
                 push_constant_ranges: &[],
             });
-
 
         let diffuse_texture = texture::Texture::from_bytes(
             &device,
@@ -421,15 +481,13 @@ impl State {
             layout: Some(&render_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",     // 1.
-                buffers: &[Vertex::desc()], // 2.
+                entry_point: "vs_main",
+                buffers: &[Vertex::desc(), InstanceRaw::desc()],
             },
             fragment: Some(wgpu::FragmentState {
-                // 3.
                 module: &shader,
                 entry_point: "fs_main",
                 targets: &[Some(wgpu::ColorTargetState {
-                    // 4.
                     format: config.format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
@@ -456,7 +514,40 @@ impl State {
             multiview: None, // 5.
         });
 
-        let num_vertices = VERTICES.len() as u32;
+        // let num_vertices = VERTICES.len() as u32;
+
+        let instances = (0..NUM_INSTANCES_PER_ROW)
+            .flat_map(|z| {
+                (0..NUM_INSTANCES_PER_ROW).map(move |x| {
+                    let position = cgmath::Vector3 {
+                        x: x as f32,
+                        y: 0.0,
+                        z: z as f32,
+                    } * 5.0;
+
+                    let rotation = if position.is_zero() {
+                        cgmath::Quaternion::from_axis_angle(
+                            cgmath::Vector3::unit_z(),
+                            cgmath::Deg(0.0),
+                        )
+                    } else {
+                        cgmath::Quaternion::from_axis_angle(
+                            position.clone().normalize(),
+                            cgmath::Deg(45.0),
+                        )
+                    };
+
+                    Instance { position, rotation }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Instance Buffer"),
+            contents: bytemuck::cast_slice(&instance_data),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
 
         Self {
             window,
@@ -486,6 +577,9 @@ impl State {
             camera_uniform,
             camera_buffer,
             camera_bind_group,
+
+            instances,
+            instance_buffer,
         }
     }
 
@@ -503,28 +597,48 @@ impl State {
     }
 
     fn input(&mut self, event: &WindowEvent) -> bool {
-        self.camera_controller.process_events(event) ||
-        match event {
-            WindowEvent::KeyboardInput {
-                input:
-                    KeyboardInput {
-                        state,
-                        virtual_keycode: Some(VirtualKeyCode::Space),
-                        ..
-                    },
-                ..
-            } => {
-                self.is_space_pressed = *state == ElementState::Pressed;
-                true
+        self.camera_controller.process_events(event)
+            || match event {
+                WindowEvent::KeyboardInput {
+                    input:
+                        KeyboardInput {
+                            state,
+                            virtual_keycode: Some(VirtualKeyCode::Space),
+                            ..
+                        },
+                    ..
+                } => {
+                    self.is_space_pressed = *state == ElementState::Pressed;
+                    true
+                }
+                _ => false,
             }
-            _ => false,
-        }
     }
 
     fn update(&mut self) {
         self.camera_controller.update_camera(&mut self.camera);
         self.camera_uniform.update_view_proj(&self.camera);
-        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[self.camera_uniform]),
+        );
+
+        for instance in &mut self.instances {
+            let amount = cgmath::Quaternion::from_angle_y(cgmath::Rad(0.01));
+            let current = instance.rotation;
+            instance.rotation = amount * current;
+        }
+        let instance_data = self
+            .instances
+            .iter()
+            .map(Instance::to_raw)
+            .collect::<Vec<_>>();
+        self.queue.write_buffer(
+            &self.instance_buffer,
+            0,
+            bytemuck::cast_slice(&instance_data),
+        );
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -565,8 +679,10 @@ impl State {
             render_pass.set_bind_group(0, bind_group, &[]);
             render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16); // 1.
-            render_pass.draw_indexed(0..self.num_indices, 0, 0..1); // 2.
+            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+
+            render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instances.len() as _);
         }
 
         // submit will accept anything that implements IntoIter
@@ -613,5 +729,4 @@ impl CameraController {
             _ => false,
         }
     }
-
 }
