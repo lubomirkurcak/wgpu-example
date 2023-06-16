@@ -11,14 +11,12 @@ use winit::{
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
+mod assets;
 mod camera;
 mod model;
-mod assets;
 mod texture;
 
 use model::{DrawLight, DrawModel, Vertex};
-
-const NUM_INSTANCES_PER_ROW: u32 = 10;
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -229,7 +227,7 @@ impl State {
             backends: wgpu::Backends::all(),
             dx12_shader_compiler: Default::default(),
         });
-        
+
         // # Safety
         //
         // The surface needs to live as long as the window that created it.
@@ -266,7 +264,9 @@ impl State {
         // Shader code in this tutorial assumes an Srgb surface texture. Using a different
         // one will result all the colors comming out darker. If you want to support non
         // Srgb surfaces, you'll need to account for that when drawing to the frame.
-        let surface_format = surface_caps.formats.iter()
+        let surface_format = surface_caps
+            .formats
+            .iter()
             .copied()
             .filter(|f| f.describe().srgb)
             .next()
@@ -338,28 +338,12 @@ impl State {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        const SPACE_BETWEEN: f32 = 3.0;
-        let instances = (0..NUM_INSTANCES_PER_ROW)
-            .flat_map(|z| {
-                (0..NUM_INSTANCES_PER_ROW).map(move |x| {
-                    let x = SPACE_BETWEEN * (x as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
-                    let z = SPACE_BETWEEN * (z as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+        let instances = vec![{
+            let position = cgmath::Vector3::zero();
+            let rotation = cgmath::Quaternion::one();
 
-                    let position = cgmath::Vector3 { x, y: 0.0, z };
-
-                    let rotation = if position.is_zero() {
-                        cgmath::Quaternion::from_axis_angle(
-                            cgmath::Vector3::unit_z(),
-                            cgmath::Deg(0.0),
-                        )
-                    } else {
-                        cgmath::Quaternion::from_axis_angle(position.normalize(), cgmath::Deg(45.0))
-                    };
-
-                    Instance { position, rotation }
-                })
-            })
-            .collect::<Vec<_>>();
+            Instance { position, rotation }
+        }];
 
         let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -392,10 +376,9 @@ impl State {
             label: Some("camera_bind_group"),
         });
 
-        let obj_model =
-            assets::load_model("cube.obj", &device, &queue, &texture_bind_group_layout)
-                .await
-                .unwrap();
+        let obj_model = assets::load_model("cube.obj", &device, &queue, &texture_bind_group_layout)
+            .await
+            .unwrap();
 
         let light_uniform = LightUniform {
             position: [2.0, 2.0, 2.0],
@@ -768,4 +751,3 @@ pub async fn run() {
         }
     });
 }
-
